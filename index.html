@@ -369,7 +369,7 @@ body.drawer-open #drawer{transform:none}
    engine (Supabase RLS stays closed until Step 09 auth).
    ===================================================================== */
 
-const EXPECTED_ENGINE_VERSION = '1.2';
+const EXPECTED_ENGINE_VERSION = '1.3';
 const CONFIG = {
   ENGINE_URL: localStorage.getItem('pc_engine') || 'https://personal-cloud-bmby.onrender.com',
 };
@@ -492,12 +492,31 @@ function browserPlayable(f){
 }
 
 /* ---------------- RENDER HELPERS ---------------- */
+/* Tile videos must NOT all start loading at once: a big grid would fire
+   hundreds of simultaneous range requests at the small Render box and
+   stall first paint. src is attached lazily as tiles scroll into view
+   (native loading=lazy does not exist for <video>). */
+let _vio=null;
+function initLazyVideos(scope){
+  const vids=(scope||document).querySelectorAll('video[data-src]');
+  if(!vids.length) return;
+  if(!('IntersectionObserver' in window)){
+    vids.forEach(v=>{v.src=v.dataset.src;v.removeAttribute('data-src');}); return;
+  }
+  if(!_vio) _vio=new IntersectionObserver(es=>{
+    for(const en of es) if(en.isIntersecting){
+      const v=en.target; v.src=v.dataset.src; v.removeAttribute('data-src');
+      _vio.unobserve(v);
+    }
+  },{rootMargin:'340px'});
+  vids.forEach(v=>_vio.observe(v));
+}
 function tileHTML(f){
   const isV=f.media_kind==='video';
   const dur=isV?fmtDur(f.duration_seconds):'';
   return `<div class="tile" data-id="${f.id}">
     <div class="check"><span class="ms">check</span></div>
-    ${isV?`<video preload="metadata" muted playsinline loading="lazy" src="${streamURL(f)}#t=0.4"></video>
+    ${isV?`<video class="lazyv" data-src="${streamURL(f)}#t=0.4" muted playsinline preload="metadata"></video>
     <div class="playglyph"><span class="ms">play_arrow</span></div>${dur?`<div class="badge">${dur}</div>`:''}`
       :`<img loading="lazy" decoding="async" alt="" src="${streamURL(f)}">`}
     <div class="tname">${esc(f.manual_title||f.original_filename)}</div>
@@ -645,7 +664,7 @@ function renderMedia(v){
     }
   }
   v.innerHTML=html;
-  wireFbar(months); wireTiles(v,list);
+  wireFbar(months); wireTiles(v,list); initLazyVideos(v);
 }
 
 async function loadAlbums(){ S.albums=await api('/api/albums'); }
@@ -656,7 +675,7 @@ function renderAlbums(v){
   else html+=`<div class="albgrid">`+S.albums.map(a=>{
     const cov=a.cover_file_id?S.files.find(f=>f.id===a.cover_file_id):null;
     const covHTML=cov?(cov.media_kind==='video'
-      ?`<video preload="metadata" muted playsinline src="${streamURL(cov)}#t=0.4"></video>`
+      ?`<video muted playsinline preload="metadata" data-src="${streamURL(cov)}#t=0.4"></video>`
       :`<img loading="lazy" src="${streamURL(cov)}">`)
       :`<div class="ph"><span class="ms" style="font-size:44px">photo_library</span></div>`;
     return `<div class="alb" data-id="${a.id}"><div class="cov">${covHTML}</div>
@@ -664,6 +683,7 @@ function renderAlbums(v){
   }).join('')+`</div>`;
   v.innerHTML=html;
   v.querySelectorAll('.alb').forEach(el=>el.onclick=()=>openAlbum(el.dataset.id));
+  initLazyVideos(v);
 }
 async function openAlbum(id){
   S.view='album'; S.ctxAlbum=id; S.sel.clear(); S.selMode=false; updateSelBar();
@@ -699,6 +719,7 @@ async function openAlbum(id){
     });
   };
   wireTiles(v,S.albumItems);
+  initLazyVideos(v);
   syncHash();
 }
 
@@ -727,11 +748,12 @@ function renderTrash(v){
     html+=`<div class="grid" style="padding-top:8px">`;
     for(const f of list)
       html+=`<div class="tile tt" data-id="${f.id}" style="filter:grayscale(.75) brightness(.75)">
-        ${f.media_kind==='video'?`<video preload="metadata" muted playsinline src="${streamURL(f)}#t=0.4"></video>`
+        ${f.media_kind==='video'?`<video muted playsinline preload="metadata" data-src="${streamURL(f)}#t=0.4"></video>`
                                 :`<img loading="lazy" src="${streamURL(f)}">`}</div>`;
     html+=`</div>`;
   }
   v.innerHTML=html;
+  initLazyVideos(v);
   v.querySelectorAll('.tt').forEach(el=>{
     el.onclick=()=>{
       const id=el.dataset.id, f=list.find(x=>x.id===id);
@@ -795,16 +817,27 @@ async function checkEngine(){
   const pill=$('#engPill'), txt=$('#engTxt'), note=$('#verNote');
   pill.className='pill wait'; txt.textContent='checking…';
   if(note) note.textContent='';
+  let sessBroken=false;
   try{
     const r=await fetch(CONFIG.ENGINE_URL+'/health',{signal:AbortSignal.timeout(8000)});
     const j=await r.json();
     let state='Starting / degraded';
-    if(j.telegram_authorized) { pill.className='pill ok';
+    if(j.telegram_authorized){ pill.className='pill ok';
       state='Awake · up '+Math.round((j.uptime_seconds||0)/60)+' min'; }
-    else pill.className='pill bad';
+    else{
+      pill.className='pill bad';
+      const err=String(j.telegram_error||'');
+      sessBroken=/auth|session|revoked|duplicated|unregistered/i.test(err);
+      state=sessBroken?'Engine awake · TELEGRAM SESSION INVALID'
+                      :'Engine awake · Telegram degraded';
+      if(note) note.innerHTML='<b style="color:var(--error)">Fix:</b> run '+
+        '<span class="mono">python telegram_setup.py</span> (creates two '+
+        'independent sessions), put the <b>ENGINE</b> string into Render → '+
+        'Environment → TELEGRAM_SESSION_STRING, Save &amp; redeploy.';
+    }
     if(j.version){
       state+=' · engine v'+j.version;
-      if(note && j.version!==EXPECTED_ENGINE_VERSION)
+      if(note && j.version!==EXPECTED_ENGINE_VERSION && !sessBroken)
         note.innerHTML='<b style="color:var(--error)">Engine is v'+esc(j.version)+
           ' but this page expects v'+EXPECTED_ENGINE_VERSION+
           '.</b> Push the latest <span class="mono">main.py</span> to the Render repo and wait for redeploy.';
@@ -812,6 +845,7 @@ async function checkEngine(){
     txt.textContent=state;
   }catch(e){ pill.className='pill bad'; txt.textContent='Sleeping or unreachable'; }
 }
+const SESS_BROKEN_RE=/auth|session|revoked|duplicated|unregistered/i;
 async function bootEngine(){
   const bar=$('#bootBar'), msg=$('#bootMsg'), btn=$('#engBoot'), pill=$('#engPill'), txt=$('#engTxt');
   btn.disabled=true; bar.style.display='block'; pill.className='pill wait'; txt.textContent='booting…';
@@ -826,6 +860,15 @@ async function bootEngine(){
         pill.className='pill ok'; txt.textContent='Awake just now';
         msg.textContent='Engine is awake ✔ ('+Math.round((Date.now()-t0)/1000)+'s)';
         toast('Engine is awake'); return;
+      }
+      if(j.telegram_error && SESS_BROKEN_RE.test(String(j.telegram_error))){
+        bar.style.display='none'; btn.disabled=false;
+        pill.className='pill bad'; txt.textContent='Engine awake · TELEGRAM SESSION INVALID';
+        msg.textContent='The engine IS running, but its Telegram session is revoked. '+
+          'Run python telegram_setup.py, put the ENGINE string into Render → '+
+          'Environment (TELEGRAM_SESSION_STRING), then redeploy.';
+        toast('Engine up — but Telegram session invalid','Re-check',checkEngine);
+        return;
       }
     }catch(e){/* still sleeping */}
     await new Promise(r=>setTimeout(r,3000));
