@@ -95,12 +95,21 @@ body.drawer-open #drawer{transform:none}
 .d-foot{margin-top:auto;padding:14px 20px;font-size:12.5px;color:var(--on-surface-var);line-height:1.7;border-top:1px solid var(--surface-3)}
 .d-foot b{color:var(--on-surface);font-weight:500}
 
-/* filter chips row */
-.chips{display:flex;gap:8px;overflow-x:auto;padding:10px 6px 6px;scrollbar-width:none}
-.chips::-webkit-scrollbar{display:none}
-.fchip{flex:none;border:1px solid var(--outline);color:var(--on-surface-var);border-radius:100px;
+/* filter bar: date dropdown + format chips */
+.fbar{position:relative;display:flex;gap:8px;align-items:center;padding:10px 6px 6px;flex-wrap:wrap}
+.fchip{border:1px solid var(--outline);color:var(--on-surface-var);border-radius:100px;
        padding:7px 14px;font-size:13px;cursor:pointer;background:transparent;white-space:nowrap}
 .fchip.on{background:var(--primary-c);border-color:transparent;color:var(--on-primary-c);font-weight:500}
+.ddn{position:absolute;top:calc(100% - 2px);left:6px;z-index:20;background:var(--surface);
+     border:1px solid var(--surface-3);border-radius:16px;box-shadow:var(--shadow-3);
+     padding:14px;width:min(340px,92vw)}
+.ddn h5{font-size:12.5px;color:var(--on-surface-var);margin:2px 2px 8px;display:flex;align-items:center;gap:6px}
+.ddn .gridy{display:flex;flex-wrap:wrap;gap:8px}
+.ddn .yr{min-width:72px;text-align:center;border:1px solid var(--outline);border-radius:10px;
+         padding:8px 10px;font-size:13px;cursor:pointer;color:var(--on-surface-var)}
+.ddn .yr:hover,.ddn .mo:hover{background:var(--surface-3)}
+.ddn .mo{min-width:96px;text-align:center;border:1px solid var(--outline);border-radius:10px;
+         padding:9px 10px;font-size:13px;cursor:pointer;color:var(--on-surface)}
 
 /* content */
 #view{flex:1;overflow-y:auto;overflow-x:hidden;padding:0 16px 130px;position:relative;-webkit-overflow-scrolling:touch}
@@ -289,7 +298,7 @@ body.drawer-open #drawer{transform:none}
     <button class="sel-all" id="selAll">Select all</button>
     <div class="spacer"></div>
     <button class="icon-btn" id="actAddAlbum" title="Add to album"><span class="ms">library_add</span></button>
-    <button class="icon-btn" id="actRemoveAlbum" title="Remove from this album" style="display:none"><span class="ms">folder_remove</span></button>
+    <button class="icon-btn" id="actRemoveAlbum" title="Remove from this album" style="display:none"><span class="ms">remove_circle</span></button>
     <button class="icon-btn" id="actDownload" title="Download originals"><span class="ms">download</span></button>
     <button class="icon-btn" id="actTrash" title="Move to trash"><span class="ms">delete</span></button>
   </div>
@@ -360,6 +369,7 @@ body.drawer-open #drawer{transform:none}
    engine (Supabase RLS stays closed until Step 09 auth).
    ===================================================================== */
 
+const EXPECTED_ENGINE_VERSION = '1.2';
 const CONFIG = {
   ENGINE_URL: localStorage.getItem('pc_engine') || 'https://personal-cloud-bmby.onrender.com',
 };
@@ -372,7 +382,7 @@ const LS = {
 
 const S = {
   files: [], trashFiles: [], albums: [], albumItems: [],
-  view: 'all', query: '', timeFilter: null, extFilter: null,
+  view: 'all', query: '', timeFilter: null, extFilter: null, yearOpen: null,
   selMode: false, sel: new Set(), ctxAlbum: null,
 };
 if ('ontouchstart' in window) document.body.classList.add('touch');
@@ -517,32 +527,92 @@ function groupByDate(list){
   }
   return groups;
 }
-function chipsHTML(months, exts){
-  let h='<div class="chips" id="chips">';
-  h+=`<button class="fchip ${!S.timeFilter&&!S.extFilter?'on':''}" data-f="time" data-v="">All time</button>`;
-  for(const m of months)
-    h+=`<button class="fchip ${S.timeFilter===m?'on':''}" data-f="time" data-v="${m}">${esc(monthLabel(m))}</button>`;
-  if(exts && exts.length>1)
+function fbarHTML(months, exts){
+  const dl = S.timeFilter;
+  let h = '<div class="fbar" id="chipsrow">';
+  h += `<button class="fchip ${dl?'on':''}" id="dateBtn">`
+     + `<span class="ms" style="font-size:17px;vertical-align:-4px">calendar_month</span> `
+     + (dl ? esc(monthLabel(dl)) : 'All time') + ' ▾</button>';
+  if(exts && exts.length)
     for(const e of exts)
-      h+=`<button class="fchip ${S.extFilter===e?'on':''}" data-f="ext" data-v="${e}">${esc(e.toUpperCase())}</button>`;
-  return h+'</div>';
+      h += `<button class="fchip ${S.extFilter===e?'on':''}" data-ext="${e}">${esc(e.toUpperCase())}</button>`;
+  h += '<div class="ddn" id="dateDdn" style="display:none"></div></div>';
+  return h;
 }
-function wireChips(){
-  $$('#chips .fchip').forEach(c=>c.onclick=()=>{
-    if(c.dataset.f==='time'){ S.timeFilter=c.dataset.v||null; }
-    else { S.extFilter=c.dataset.v||null; }
-    render();
-  });
+function wireFbar(months){
+  const btn=$('#dateBtn'), ddn=$('#dateDdn');
+  if(!btn) return;
+  const close=()=>{ ddn.style.display='none';
+    document.removeEventListener('click',outside); };
+  const outside=e=>{ if(!ddn.contains(e.target)&&e.target!==btn) close(); };
+  btn.onclick=e=>{ e.stopPropagation();
+    if(ddn.style.display==='block'){ close(); return; }
+    ddn.style.display='block';
+    document.addEventListener('click',outside);
+    renderDdn(months); };
+  $$('#chipsrow [data-ext]').forEach(b=>b.onclick=()=>{
+    S.extFilter = S.extFilter===b.dataset.ext ? null : b.dataset.ext; render(); });
 }
+function renderDdn(months){
+  const ddn=$('#dateDdn');
+  const years=[...new Set(months.map(m=>m.slice(0,4)))].sort().reverse();
+  let h='';
+  if(!S.yearOpen){
+    h+='<h5>Filter by date</h5><div class="gridy">';
+    h+='<div class="yr" data-y="">All time</div>';
+    for(const y of years) h+=`<div class="yr ${S.timeFilter&&S.timeFilter.startsWith(y)?'on fchip':''}" data-y="${y}">${y}</div>`;
+    h+='</div>';
+  } else {
+    h+=`<h5><span class="ms" style="font-size:16px;cursor:pointer" id="ddnBack">arrow_back</span> ${esc(S.yearOpen)}</h5>
+        <div class="gridy">`;
+    for(const m of months.filter(m=>m.startsWith(S.yearOpen)))
+      h+=`<div class="mo ${S.timeFilter===m?'on':''}" data-m="${m}">${esc(monthLabel(m))}</div>`;
+    h+='</div>';
+  }
+  ddn.innerHTML=h;
+  ddn.querySelectorAll('[data-y]').forEach(el=>el.onclick=e=>{
+    e.stopPropagation();
+    if(!el.dataset.y){ S.timeFilter=null; S.yearOpen=null; closeDdnApply(); }
+    else { S.yearOpen=el.dataset.y; renderDdn(months); } });
+  ddn.querySelectorAll('[data-m]').forEach(el=>el.onclick=e=>{
+    e.stopPropagation();
+    S.timeFilter = S.timeFilter===el.dataset.m ? null : el.dataset.m;
+    closeDdnApply(); });
+  const back=ddn.querySelector('#ddnBack');
+  if(back) back.onclick=e=>{ e.stopPropagation(); S.yearOpen=null; renderDdn(months); };
+}
+function closeDdnApply(){ $('#dateDdn').style.display='none'; render(); }
+
+/* ---------------- ROUTING (URL survives refresh) ---------------- */
+function syncHash(){
+  const target = S.view==='album' && S.ctxAlbum ? `#/album/${S.ctxAlbum}` : `#/${S.view}`;
+  if(location.hash !== target){
+    history.replaceState(null,'',target);   // no event loop; back button uses in-app arrows
+  }
+}
+function applyRoute(){
+  const h = decodeURIComponent(location.hash||'').replace(/^#\/?/,'');
+  if(!h){ if(S.view!=='all') setView('all'); return; }
+  const [p, arg] = h.split('/');
+  if(p==='album' && arg){
+    if(!(S.view==='album' && S.ctxAlbum===arg)) openAlbum(arg);
+  } else if(['all','photos','videos','albums','trash','settings'].includes(p)){
+    if(S.view!==p) setView(p);
+  }
+}
+window.addEventListener('hashchange', applyRoute);
 
 /* ---------------- VIEWS ---------------- */
 function setView(v){
+  const same = (S.view===v);
   S.view=v; S.query=''; $('#search').value=''; $('#searchClear').style.display='none';
-  S.timeFilter=null; S.extFilter=null;
+  S.timeFilter=null; S.extFilter=null; S.yearOpen=null;
   S.sel.clear(); S.selMode=false; updateSelBar();
   if(v!=='album') S.ctxAlbum=null;
   $$('.d-item').forEach(d=>d.classList.toggle('active',d.dataset.view===v));
   $('#fabNewAlbum').style.display=v==='albums'?'inline-flex':'none';
+  syncHash();
+  if(same && v!=='album'){ render(); return; }
   render();
 }
 function render(){
@@ -560,8 +630,7 @@ function renderMedia(v){
     .sort().reverse();
   const exts=S.view==='videos'
     ? [...new Set(baseForView().map(f=>(f.extension||'').toLowerCase()).filter(Boolean))].sort() : null;
-  let html='';
-  html+=chipsHTML(months.slice(0,14), exts);
+  let html=fbarHTML(months, exts);
   if(S.query.trim())
     html+=`<div style="padding:0 4px 6px"><span class="fchip on">“${esc(S.query)}” · ${list.length} result${list.length!==1?'s':''}</span></div>`;
   if(!list.length){
@@ -576,7 +645,7 @@ function renderMedia(v){
     }
   }
   v.innerHTML=html;
-  wireChips(); wireTiles(v,list);
+  wireFbar(months); wireTiles(v,list);
 }
 
 async function loadAlbums(){ S.albums=await api('/api/albums'); }
@@ -615,7 +684,7 @@ async function openAlbum(id){
   html+=S.albumItems.length?`<div class="grid">${S.albumItems.map(tileHTML).join('')}</div>`
        :`<div class="empty"><span class="ms">photo_library</span><h3>Empty album</h3><p>Select items in Photos/Videos, then “Add to album”.</p></div>`;
   v.innerHTML=html;
-  $('#backAlb').onclick=()=>setView('albums');
+  $('#backAlb').onclick=()=>{ history.replaceState(null,'','#/albums'); setView('albums'); };
   $('#delAlb').onclick=()=>{
     dlg(`<h3>Delete “${esc(alb?alb.name:'album')}”?</h3>
       <p style="font-size:14px;color:var(--on-surface-var)">The album is removed. Your media files are NOT touched.</p>
@@ -630,16 +699,29 @@ async function openAlbum(id){
     });
   };
   wireTiles(v,S.albumItems);
+  syncHash();
 }
 
 async function loadTrash(){
-  S.trashFiles=await fetchList(true).catch(()=>[]);
+  try{
+    S.trashFiles = await fetchList(true);
+    S.trashBroken = false;
+  }catch(e){
+    S.trashFiles = [];
+    S.trashBroken = /trashed|42703/i.test(String(e.message||e));
+  }
 }
 function renderTrash(v){
   const list=S.trashFiles;
   let html=`<div class="note-banner"><span class="ms">info</span>
     <span>Trashed items are hidden from your library. “Delete forever” removes only the catalog entry —
     the original file stays safe in your Telegram channel.</span></div>`;
+  if(S.trashBroken){
+    html+=`<div class="note-banner" style="background:var(--error-c);color:var(--error)">
+      <span class="ms">warning</span><span><b>Trash needs a one-time database upgrade.</b><br>
+      Open Supabase → SQL Editor → run <b>sql/trash_migration.sql</b> (safe, additive),
+      then reload this page.</span></div>`;
+  }
   if(!list.length) html+=`<div class="empty"><span class="ms">delete</span><h3>Trash is empty</h3></div>`;
   else{
     html+=`<div class="grid" style="padding-top:8px">`;
@@ -689,6 +771,7 @@ function renderSettings(v){
       <button class="btn-filled" id="engBoot">Boot engine</button></div>
     <p id="bootMsg" style="font-size:12.5px;color:var(--on-surface-var);margin-top:8px">
       Free Render services sleep after ~15 min idle. Booting takes ~30–60 s.</p>
+    <p id="verNote" style="font-size:12.5px;color:var(--on-surface-var);margin-top:6px"></p>
    </div>
    <div class="set-card">
     <div class="m3-field"><label>Engine URL</label>
@@ -709,13 +792,24 @@ function renderSettings(v){
   $('#setLogout').onclick=logout;
 }
 async function checkEngine(){
-  const pill=$('#engPill'), txt=$('#engTxt');
+  const pill=$('#engPill'), txt=$('#engTxt'), note=$('#verNote');
   pill.className='pill wait'; txt.textContent='checking…';
+  if(note) note.textContent='';
   try{
     const r=await fetch(CONFIG.ENGINE_URL+'/health',{signal:AbortSignal.timeout(8000)});
     const j=await r.json();
-    if(j.telegram_authorized){ pill.className='pill ok'; txt.textContent='Awake · up '+Math.round(j.uptime_seconds/60)+' min'; }
-    else { pill.className='pill bad'; txt.textContent='Starting / degraded'; }
+    let state='Starting / degraded';
+    if(j.telegram_authorized) { pill.className='pill ok';
+      state='Awake · up '+Math.round((j.uptime_seconds||0)/60)+' min'; }
+    else pill.className='pill bad';
+    if(j.version){
+      state+=' · engine v'+j.version;
+      if(note && j.version!==EXPECTED_ENGINE_VERSION)
+        note.innerHTML='<b style="color:var(--error)">Engine is v'+esc(j.version)+
+          ' but this page expects v'+EXPECTED_ENGINE_VERSION+
+          '.</b> Push the latest <span class="mono">main.py</span> to the Render repo and wait for redeploy.';
+    }
+    txt.textContent=state;
   }catch(e){ pill.className='pill bad'; txt.textContent='Sleeping or unreachable'; }
 }
 async function bootEngine(){
@@ -1002,7 +1096,9 @@ async function startApp(){
     }
   }catch(e){}
   try{ await loadAlbums(); }catch(e){ S.albums=[]; }
-  render(); updateFoot();
+  applyRoute();                     // honor #/videos, #/album/<id>, … on refresh
+  if(S.view!=='settings') render();
+  updateFoot();
   toast(`${S.files.length} item${S.files.length!==1?'s':''} loaded`);
 }
 window.logout=logout;
