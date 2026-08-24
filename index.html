@@ -164,6 +164,33 @@ body.drawer-open #drawer{transform:none}
 .alb .ct{font-size:12.5px;color:var(--on-surface-var)}
 .rowtitle{font-size:22px;font-weight:400;padding:16px 6px 2px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 
+/* movies - exclusive wide card grid */
+.moviesgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:12px;padding:12px 6px}
+.movie-card{display:flex;gap:16px;background:var(--surface);border:1px solid var(--surface-3);border-radius:16px;padding:16px;cursor:pointer;transition:box-shadow .15s,transform .15s,background .15s;min-height:90px;align-items:center}
+.movie-card:hover{box-shadow:var(--shadow-2);transform:translateY(-2px);background:var(--surface-2)}
+.movie-card .micon{flex:none;width:72px;height:72px;border-radius:12px;background:linear-gradient(135deg,var(--primary-c),var(--primary));display:flex;align-items:center;justify-content:center;color:var(--on-primary);box-shadow:var(--shadow-1)}
+.movie-card .micon .ms{font-size:36px}
+.movie-card .minfo{flex:1;min-width:0;display:flex;flex-direction:column;justify-content:center;gap:6px}
+.movie-card .mtitle{font-size:16px;font-weight:500;color:var(--on-surface);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.movie-card .mmeta{display:flex;flex-wrap:wrap;gap:12px;align-items:center;font-size:13px;color:var(--on-surface-var)}
+.movie-card .mtag{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:100px;background:var(--surface-3);color:var(--on-surface-var);font-weight:500}
+.movie-card .mtag .ms{font-size:14px}
+.movie-card .mactions{display:flex;gap:8px;flex-wrap:wrap;flex:none}
+.movie-card .icon-btn{width:36px;height:36px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;color:var(--on-surface-var);background:var(--surface-3);transition:background .15s,color .15s}
+.movie-card .icon-btn:hover{background:var(--primary-c);color:var(--on-primary-c)}
+@media(max-width:900px){
+  .moviesgrid{grid-template-columns:1fr;padding:8px 4px}
+  .movie-card{padding:12px;gap:12px;min-height:80px}
+  .movie-card .micon{width:60px;height:60px;border-radius:10px}
+  .movie-card .micon .ms{font-size:30px}
+  .movie-card .mtitle{font-size:15px}
+}
+@media(max-width:640px){
+  .moviesgrid{gap:8px;padding:6px 2px}
+  .movie-card{padding:10px;gap:10px}
+  .movie-card .micon{width:52px;height:52px}
+}
+
 /* lightbox */
 #lb{position:fixed;inset:0;background:#000;z-index:120;display:none;flex-direction:column}
 .lbtop{position:absolute;top:0;left:0;right:0;height:62px;display:flex;align-items:center;gap:2px;padding:0 8px;
@@ -775,6 +802,7 @@ function render(){
   else if(S.view==='album') renderAlbumDetail(v);
   else if(S.view==='trash') renderTrash(v);
   else if(S.view==='settings') renderSettings(v);
+  else if(S.view==='movies') renderMovies(v);
   else renderMedia(v);
 }
 
@@ -808,6 +836,52 @@ function renderMedia(v){
   const sm=$('#showMoreBtn');
   if(sm) sm.onclick=()=>{ S.showMax=(S.showMax||SHOW_PAGE)+SHOW_PAGE; render(); };
   wireFbar(months); wireTiles(v,list); initLazyVideos(v);
+}
+
+function renderMovies(v){
+  const all=visibleMedia();
+  const list=all.slice(0,S.showMax||SHOW_PAGE);
+  if(!all.length){
+    v.innerHTML=`<div class="empty"><span class="ms">movie</span><h3>No movies found</h3>
+      <p>Upload MKV files to see them here.</p></div>`;
+    return;
+  }
+  let html=`<div class="moviesgrid">`+list.map(f=>{
+    const title=f.manual_title||f.original_filename;
+    const dur=f.duration_seconds?fmtDur(f.duration_seconds):'';
+    const ext=(f.extension||'').toUpperCase();
+    const stream=streamURL(f);
+    const vlcUrl='vlc://'+stream.replace(/^https?:\/\//,'');
+    return `<div class="movie-card" data-id="${f.id}">
+      <div class="micon"><span class="ms">movie</span></div>
+      <div class="minfo">
+        <div class="mtitle">${esc(title)}</div>
+        <div class="mmeta">
+          <span class="mtag"><span class="ms">description</span>${esc(ext)}</span>
+          ${dur?`<span class="mtag"><span class="ms">schedule</span>${esc(dur)}</span>`:''}
+        </div>
+      </div>
+      <div class="mactions">
+        <button class="icon-btn mcCopy" title="Copy stream link" data-url="${esc(stream)}"><span class="ms">content_copy</span></button>
+        <a class="icon-btn" href="${esc(vlcUrl)}" target="_blank" rel="noopener" title="Open in VLC"><span class="ms">smart_display</span></a>
+      </div>
+    </div>`;
+  }).join('')+`</div>`;
+  if(all.length>list.length)
+    html+=`<div style="display:flex;justify-content:center;padding:20px 0 8px">
+      <button class="fchip" id="showMoreBtn">Show more · ${all.length-list.length} more</button></div>`;
+  v.innerHTML=html;
+  const sm=$('#showMoreBtn');
+  if(sm) sm.onclick=()=>{ S.showMax=(S.showMax||SHOW_PAGE)+SHOW_PAGE; render(); };
+  /* wire copy buttons */
+  v.querySelectorAll('.mcCopy').forEach(btn=>{
+    btn.onclick=()=>{ navigator.clipboard.writeText(btn.dataset.url).then(()=>toast('Stream link copied')).catch(()=>toast('Copy failed')); };
+  });
+  /* wire tile clicks for selection/lightbox */
+  v.querySelectorAll('.movie-card').forEach(card=>{
+    const id=card.dataset.id, f=list.find(x=>x.id===id); if(!f) return;
+    card.onclick=()=>{ if(S.selMode||S.sel.size){ toggleSel(id);} else openLB(id,list); };
+  });
 }
 
 async function loadAlbums(){ S.albums=await api('/api/albums'); }
