@@ -325,6 +325,7 @@ body.drawer-open #drawer{transform:none}
       <div class="d-item active" data-view="all"><span class="ms">grid_view</span>All</div>
       <div class="d-item" data-view="photos"><span class="ms fill">photo_library</span>Photos</div>
       <div class="d-item" data-view="videos"><span class="ms">video_library</span>Videos</div>
+      <div class="d-item" data-view="movies"><span class="ms">movie</span>Movies</div>
       <div class="d-item" data-view="albums"><span class="ms">auto_awesome_mosaic</span>Albums</div>
       <div class="d-item" data-view="trash"><span class="ms">delete</span>Trash</div>
       <div class="d-item" data-view="settings"><span class="ms">settings</span>Settings</div>
@@ -473,13 +474,16 @@ function monthLabel(key){
   return new Date(y, m-1, 1).toLocaleDateString(undefined,{month:'long',year:'numeric'});
 }
 function baseForView(){
-  if(S.view==='photos') return S.files.filter(f=>f.media_kind==='photo');
-  if(S.view==='videos') return S.files.filter(f=>f.media_kind==='video');
-  return S.files.slice();                       // "All"
+  // all main views should EXCLUDE trashed items
+  const base = S.files.filter(f=>!f.trashed);
+  if(S.view==='photos') return base.filter(f=>f.media_kind==='photo');
+  if(S.view==='videos') return base.filter(f=>f.media_kind==='video');
+  if(S.view==='movies') return base.filter(f=>f.media_kind==='video' && (f.extension||'').toLowerCase()==='mkv');
+  return base;                       // "All"
 }
 function visibleMedia(){
   let list = baseForView();
-  if(S.view==='videos' && S.extFilter)
+  if((S.view==='videos' || S.view==='movies') && S.extFilter)
     list = list.filter(f=>(f.extension||'').toLowerCase()===S.extFilter);
   if(S.timeFilter)
     list = list.filter(f=>monthKey(f._ts)===S.timeFilter);
@@ -737,7 +741,7 @@ function applyRoute(){
   const [p, arg] = h.split('/');
   if(p==='album' && arg){
     if(!(S.view==='album' && S.ctxAlbum===arg)) openAlbum(arg);
-  } else if(['all','photos','videos','albums','trash','settings'].includes(p)){
+  } else if(['all','photos','videos','movies','albums','trash','settings'].includes(p)){
     if(S.view!==p) setView(p);
   }
 }
@@ -779,7 +783,7 @@ function renderMedia(v){
   const list=all.slice(0,S.showMax||SHOW_PAGE);   // windowed: 30 at a time
   const months=[...new Set(all.map(f=>monthKey(f._ts)).filter(Boolean))]
     .sort().reverse();
-  const exts=S.view==='videos'
+  const exts=(S.view==='videos' || S.view==='movies')
     ? [...new Set(all.map(f=>(f.extension||'').toLowerCase()).filter(Boolean))].sort() : null;
   let html=fbarHTML(months, exts);
   if(S.query.trim())
@@ -1169,11 +1173,12 @@ function mountVideo(url,attempt){
   clearLbExtras(); lbSpin(true);
   $('#lbMedia').innerHTML='';
   const vid=document.createElement('video');
-  vid.controls=true; vid.playsInline=true; vid.preload='auto'; vid.src=url;
-  /* custom spinner ONLY until the first frame exists - afterwards the
-     player's native indicator takes over (two overlapping rings = ugly) */
-  vid.addEventListener('loadeddata',()=>lbSpin(false),{once:true});
-  vid.addEventListener('playing',()=>lbSpin(false),{once:true});
+  /* hide native controls + spinner until first frame loads */
+  vid.controls=false; vid.playsInline=true; vid.preload='auto'; vid.src=url;
+  vid.style.opacity='0';
+  vid.addEventListener('loadeddata',()=>{
+    vid.style.opacity='1'; vid.controls=true; lbSpin(false);
+  },{once:true});
   vid.onerror=()=>{
     lbSpin(false);
     const code=vid.error?vid.error.code:0;
